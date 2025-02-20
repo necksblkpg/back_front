@@ -23,12 +23,11 @@ import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { sv } from 'date-fns/locale';
 
 /**
- * Beräknar total försäljning utan dubbelsummering genom att:
- * 1. Gruppera orderrader per order_number.
- * 2. Om en order innehåller bundlerader så filtreras barnrader bort.
- * 3. Tar fram det högsta orderbeloppet (maxSek) för att undvika dubbelsummering.
+ * Beräknar total försäljning utan dubbelsummering.
+ * Om showBundles är true, används nuvarande logik (behåll bundlar och filtrera ut barnrader)
+ * Om showBundles är false, tas bundlar bort och endast barnrader räknas.
  */
-function calculateUnbundledTotal(orders) {
+function calculateUnbundledTotal(orders, showBundles = true) {
   const map = new Map();
   orders.forEach(line => {
     const key = line.order_number;
@@ -49,22 +48,27 @@ function calculateUnbundledTotal(orders) {
   const arr = [...map.values()];
   arr.forEach(orderGroup => {
     let finalLines = [...orderGroup.lines];
-    const bundleLines = finalLines.filter(l => l.isBundle);
-    if (bundleLines.length > 0) {
-      bundleLines.forEach(bundleLine => {
-        if (!bundleLine.childProductNumbers) return;
-        const childSkus = new Set(
-          bundleLine.childProductNumbers
-            .split(',')
-            .map(sku => sku.trim())
-            .filter(Boolean)
-        );
-        finalLines = finalLines.filter(line => {
-          if (line.isBundle) return true;
-          if (childSkus.has(line.productNumber)) return false;
-          return true;
+    if (showBundles) {
+      const bundleLines = finalLines.filter(l => l.isBundle);
+      if (bundleLines.length > 0) {
+        bundleLines.forEach(bundleLine => {
+          if (!bundleLine.childProductNumbers) return;
+          const childSkus = new Set(
+            bundleLine.childProductNumbers
+              .split(',')
+              .map(sku => sku.trim())
+              .filter(Boolean)
+          );
+          finalLines = finalLines.filter(line => {
+            if (line.isBundle) return true;
+            if (childSkus.has(line.productNumber)) return false;
+            return true;
+          });
         });
-      });
+      }
+    } else {
+      // Bundlar stängda: ta bort bundlar, använd endast barnrader
+      finalLines = finalLines.filter(line => !line.isBundle);
     }
     let maxSek = 0;
     finalLines.forEach(l => {
@@ -81,7 +85,6 @@ const SalesDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [salesData, setSalesData] = useState({});
   const [allOrders, setAllOrders] = useState([]);
-
   // Datum
   const [fromDate, setFromDate] = useState(
     new Date(new Date().setDate(new Date().getDate() - 30))
@@ -89,9 +92,10 @@ const SalesDashboard = () => {
   const [toDate, setToDate] = useState(
     new Date(new Date().setDate(new Date().getDate() - 1))
   );
-
   // Switch: Visa endast SHIPPED ordrar
   const [onlyShipped, setOnlyShipped] = useState(false);
+  // Ny switch: Visa bundlar eller inte
+  const [showBundles, setShowBundles] = useState(true);
 
   // Hämta försäljningsdata
   useEffect(() => {
@@ -132,10 +136,10 @@ const SalesDashboard = () => {
     fetchSalesData();
   }, [fromDate, toDate, onlyShipped]);
 
-  // Beräkna total försäljning utan dubbelsummering
+  // Beräkna total försäljning baserat på om bundlar ska visas
   const unbundledTotalSales = useMemo(() => {
-    return calculateUnbundledTotal(allOrders);
-  }, [allOrders]);
+    return calculateUnbundledTotal(allOrders, showBundles);
+  }, [allOrders, showBundles]);
 
   // Gruppning av orderrader för att skapa tabellrader samt räkna antal unika ordrar
   const groupedOrders = useMemo(() => {
@@ -159,23 +163,29 @@ const SalesDashboard = () => {
     const arr = [...map.values()];
     arr.forEach(orderGroup => {
       let finalLines = [...orderGroup.lines];
-      const bundleLines = finalLines.filter(l => l.isBundle);
-      if (bundleLines.length > 0) {
-        bundleLines.forEach(bundleLine => {
-          if (!bundleLine.childProductNumbers) return;
-          const childSkus = new Set(
-            bundleLine.childProductNumbers
-              .split(',')
-              .map(s => s.trim())
-              .filter(Boolean)
-          );
-          finalLines = finalLines.filter(line => {
-            if (line.isBundle) return true;
-            if (childSkus.has(line.productNumber)) return false;
-            return true;
+      if (showBundles) {
+        const bundleLines = finalLines.filter(l => l.isBundle);
+        if (bundleLines.length > 0) {
+          bundleLines.forEach(bundleLine => {
+            if (!bundleLine.childProductNumbers) return;
+            const childSkus = new Set(
+              bundleLine.childProductNumbers
+                .split(',')
+                .map(sku => sku.trim())
+                .filter(Boolean)
+            );
+            finalLines = finalLines.filter(line => {
+              if (line.isBundle) return true;
+              if (childSkus.has(line.productNumber)) return false;
+              return true;
+            });
           });
-        });
+        }
+      } else {
+        // När bundlar är avstängda: filtrera bort bundle-rader
+        finalLines = finalLines.filter(line => !line.isBundle);
       }
+      orderGroup.linesToDisplay = finalLines;
       let sumQty = 0;
       let maxSek = 0;
       finalLines.forEach(l => {
@@ -184,13 +194,12 @@ const SalesDashboard = () => {
           maxSek = l.total_sek || 0;
         }
       });
-      orderGroup.linesToDisplay = finalLines;
       orderGroup.total_quantity = sumQty;
       orderGroup.total_sek = maxSek;
     });
     arr.sort((a, b) => new Date(b.date) - new Date(a.date));
     return arr;
-  }, [allOrders]);
+  }, [allOrders, showBundles]);
 
   // Räkna antalet unika ordrar
   const totalOrders = useMemo(() => groupedOrders.length, [groupedOrders]);
@@ -209,7 +218,7 @@ const SalesDashboard = () => {
         Försäljningsöversikt
       </Typography>
 
-      {/* Datumväljare och switch */}
+      {/* Datumväljare, switch för SHIPPED samt toggle för bundlar */}
       <LocalizationProvider dateAdapter={AdapterDateFns} adapterLocale={sv}>
         <Box sx={{ display: 'flex', gap: 2, mb: 3, alignItems: 'center' }}>
           <DatePicker
@@ -235,6 +244,15 @@ const SalesDashboard = () => {
               />
             }
             label="Visa endast SHIPPED ordrar"
+          />
+          <FormControlLabel
+            control={
+              <Switch
+                checked={showBundles}
+                onChange={(e) => setShowBundles(e.target.checked)}
+              />
+            }
+            label="Visa bundlar"
           />
         </Box>
       </LocalizationProvider>
@@ -289,7 +307,7 @@ const SalesDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* Tabell med orderdata som visas under korten */}
+      {/* Tabell med orderdata */}
       <Box sx={{ mt: 4 }}>
         <Paper>
           <Table>
