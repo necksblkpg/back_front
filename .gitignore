@@ -1,0 +1,15 @@
+# Ignorera virtuella miljön (Python)
+venv/
+
+# Ignorera node_modules
+frontend/node_modules/
+
+# Ignorera ev. lockfiler
+*.log
+
+# Ignorera miljöfil
+.env
+backend/.env
+
+# Ignorera Google Cloud JSON
+backend/my-project-db-433615-dc89e1274066.json
