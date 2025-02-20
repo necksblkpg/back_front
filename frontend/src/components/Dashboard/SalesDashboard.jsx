@@ -7,30 +7,28 @@ import {
   CardContent,
   CircularProgress,
   FormControlLabel,
-  Switch
+  Switch,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
+  Paper
 } from '@mui/material';
 import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
 import ShoppingBasketIcon from '@mui/icons-material/ShoppingBasket';
-import InventoryIcon from '@mui/icons-material/Inventory';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { sv } from 'date-fns/locale';
 
-import SoldArticlesDialog from './SoldArticlesDialog';
-import TotalSalesDialog from './TotalSalesDialog';
-// Om du vill använda en separat OrderDetailsDialog:
-// import OrderDetailsDialog from './OrderDetailsDialog';
-
 /**
- * calculateUnbundledTotal(orders):
- *   - Grupperar orderrader per order_number.
- *   - Om en order har en bundlerad (isBundle = true), filtrerar bort dess barnrader.
- *   - Använder maxSek för att undvika dubbelsummering (eftersom varje rad kan innehålla total orderbelopp).
- *   - Returnerar summan av "maxSek" per order.
+ * Beräknar total försäljning utan dubbelsummering genom att:
+ * 1. Gruppera orderrader per order_number.
+ * 2. Om en order innehåller bundlerader så filtreras barnrader bort.
+ * 3. Tar fram det högsta orderbeloppet (maxSek) för att undvika dubbelsummering.
  */
 function calculateUnbundledTotal(orders) {
-  // 1. Gruppera alla rader i en Map
   const map = new Map();
   orders.forEach(line => {
     const key = line.order_number;
@@ -42,23 +40,17 @@ function calculateUnbundledTotal(orders) {
     }
     const group = map.get(key);
     group.lines.push(line);
-
-    // Om du vill ta senaste/tidigaste datum:
     if (line.order_date < group.date) {
       group.date = line.order_date;
     }
   });
 
   let total = 0;
-  // 2. Loopar igenom varje order (group)
   const arr = [...map.values()];
   arr.forEach(orderGroup => {
     let finalLines = [...orderGroup.lines];
-    // Kolla om ordern har en eller flera bundlerader
     const bundleLines = finalLines.filter(l => l.isBundle);
-
     if (bundleLines.length > 0) {
-      // För varje bundlerad: parse childProductNumbers och filtrera bort barn
       bundleLines.forEach(bundleLine => {
         if (!bundleLine.childProductNumbers) return;
         const childSkus = new Set(
@@ -68,29 +60,20 @@ function calculateUnbundledTotal(orders) {
             .filter(Boolean)
         );
         finalLines = finalLines.filter(line => {
-          // Behåll bundlerader
           if (line.isBundle) return true;
-          // Ta bort barnrader
-          if (childSkus.has(line.productNumber)) {
-            return false;
-          }
-          // Behåll stand-alone
+          if (childSkus.has(line.productNumber)) return false;
           return true;
         });
       });
     }
-
-    // 3. Undvik dubbelsummering genom att ta maxSek bland finalLines
     let maxSek = 0;
     finalLines.forEach(l => {
       if ((l.total_sek || 0) > maxSek) {
-        maxSek = l.total_sek;
+        maxSek = l.total_sek || 0;
       }
     });
-
     total += maxSek;
   });
-
   return total;
 }
 
@@ -107,38 +90,26 @@ const SalesDashboard = () => {
     new Date(new Date().setDate(new Date().getDate() - 1))
   );
 
-  // Switch: endast SHIPPED eller alla
+  // Switch: Visa endast SHIPPED ordrar
   const [onlyShipped, setOnlyShipped] = useState(false);
 
-  // Dialog states
-  const [isSoldArticlesDialogOpen, setIsSoldArticlesDialogOpen] = useState(false);
-  const [isTotalSalesDialogOpen, setIsTotalSalesDialogOpen] = useState(false);
-  // const [isOrderDialogOpen, setIsOrderDialogOpen] = useState(false);
-
-  // useEffect för att hämta data
+  // Hämta försäljningsdata
   useEffect(() => {
     const fetchSalesData = async () => {
       try {
         setLoading(true);
-
         const fromDateStr = fromDate.toISOString().split('T')[0];
         const toDateStr = toDate.toISOString().split('T')[0];
-
         const params = new URLSearchParams({
           from_date: fromDateStr,
           to_date: toDateStr
         });
-        // Om onlyShipped är true, lägg till status=shipped
         if (onlyShipped) {
           params.set('status', 'shipped');
         }
-
         const res = await fetch(`/api/bq_sales?${params}`);
         const data = await res.json();
-
         setSalesData(data);
-
-        // Platta ut aggregated_sales
         const aggregated = data.aggregated_sales || {};
         const flattenedOrders = [];
         for (const productNumber in aggregated) {
@@ -147,12 +118,10 @@ const SalesDashboard = () => {
           productOrders.forEach(order => {
             flattenedOrders.push({
               ...order,
-              // Kopiera childProductNumbers om du vill filtrera i dialogen
               childProductNumbers: productInfo.childProductNumbers
             });
           });
         }
-
         setAllOrders(flattenedOrders);
       } catch (error) {
         console.error('Fel vid hämtning av försäljningsdata:', error);
@@ -160,14 +129,71 @@ const SalesDashboard = () => {
         setLoading(false);
       }
     };
-
     fetchSalesData();
   }, [fromDate, toDate, onlyShipped]);
 
-  // Beräkna "unbundled" totalSales i frontend
+  // Beräkna total försäljning utan dubbelsummering
   const unbundledTotalSales = useMemo(() => {
     return calculateUnbundledTotal(allOrders);
   }, [allOrders]);
+
+  // Gruppning av orderrader för att skapa tabellrader samt räkna antal unika ordrar
+  const groupedOrders = useMemo(() => {
+    if (!allOrders) return [];
+    const map = new Map();
+    allOrders.forEach(line => {
+      const key = line.order_number;
+      if (!map.has(key)) {
+        map.set(key, {
+          order_number: key,
+          date: line.order_date,
+          lines: []
+        });
+      }
+      const group = map.get(key);
+      group.lines.push(line);
+      if (line.order_date < group.date) {
+        group.date = line.order_date;
+      }
+    });
+    const arr = [...map.values()];
+    arr.forEach(orderGroup => {
+      let finalLines = [...orderGroup.lines];
+      const bundleLines = finalLines.filter(l => l.isBundle);
+      if (bundleLines.length > 0) {
+        bundleLines.forEach(bundleLine => {
+          if (!bundleLine.childProductNumbers) return;
+          const childSkus = new Set(
+            bundleLine.childProductNumbers
+              .split(',')
+              .map(s => s.trim())
+              .filter(Boolean)
+          );
+          finalLines = finalLines.filter(line => {
+            if (line.isBundle) return true;
+            if (childSkus.has(line.productNumber)) return false;
+            return true;
+          });
+        });
+      }
+      let sumQty = 0;
+      let maxSek = 0;
+      finalLines.forEach(l => {
+        sumQty += l.quantity || 0;
+        if ((l.total_sek || 0) > maxSek) {
+          maxSek = l.total_sek || 0;
+        }
+      });
+      orderGroup.linesToDisplay = finalLines;
+      orderGroup.total_quantity = sumQty;
+      orderGroup.total_sek = maxSek;
+    });
+    arr.sort((a, b) => new Date(b.date) - new Date(a.date));
+    return arr;
+  }, [allOrders]);
+
+  // Räkna antalet unika ordrar
+  const totalOrders = useMemo(() => groupedOrders.length, [groupedOrders]);
 
   if (loading) {
     return (
@@ -183,7 +209,7 @@ const SalesDashboard = () => {
         Försäljningsöversikt
       </Typography>
 
-      {/* Datumväljare + switch */}
+      {/* Datumväljare och switch */}
       <LocalizationProvider dateAdapter={AdapterDateFns} adapterLocale={sv}>
         <Box sx={{ display: 'flex', gap: 2, mb: 3, alignItems: 'center' }}>
           <DatePicker
@@ -201,7 +227,6 @@ const SalesDashboard = () => {
             maxDate={new Date()}
             format="yyyy-MM-dd"
           />
-
           <FormControlLabel
             control={
               <Switch
@@ -216,15 +241,13 @@ const SalesDashboard = () => {
 
       <Grid container spacing={3}>
         {/* Kort för Total försäljning */}
-        <Grid item xs={12} md={3}>
+        <Grid item xs={12} md={6}>
           <Card
             sx={{
               background: 'linear-gradient(135deg, #2196f3 0%, #03a9f4 100%)',
               color: 'white',
-              boxShadow: 3,
-              cursor: 'pointer'
+              boxShadow: 3
             }}
-            onClick={() => setIsTotalSalesDialogOpen(true)}
           >
             <CardContent>
               <Box display="flex" alignItems="center" gap={2}>
@@ -242,17 +265,14 @@ const SalesDashboard = () => {
             </CardContent>
           </Card>
         </Grid>
-
         {/* Kort för Antal ordrar */}
-        <Grid item xs={12} md={3}>
+        <Grid item xs={12} md={6}>
           <Card
             sx={{
               background: 'linear-gradient(135deg, #4caf50 0%, #03a9f4 100%)',
               color: 'white',
-              boxShadow: 3,
-              cursor: 'pointer'
+              boxShadow: 3
             }}
-            // onClick={() => setIsOrderDialogOpen(true)}
           >
             <CardContent>
               <Box display="flex" alignItems="center" gap={2}>
@@ -260,32 +280,7 @@ const SalesDashboard = () => {
                 <Box>
                   <Typography variant="h6">Antal ordrar</Typography>
                   <Typography variant="h4">
-                    {salesData.totalOrders || 0}
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Kort för Sålda artiklar */}
-        <Grid item xs={12} md={3}>
-          <Card
-            sx={{
-              background: 'linear-gradient(135deg, #03a9f4 0%, #2196f3 100%)',
-              color: 'white',
-              boxShadow: 3,
-              cursor: 'pointer'
-            }}
-            onClick={() => setIsSoldArticlesDialogOpen(true)}
-          >
-            <CardContent>
-              <Box display="flex" alignItems="center" gap={2}>
-                <InventoryIcon sx={{ fontSize: 40 }} />
-                <Box>
-                  <Typography variant="h6">Sålda artiklar</Typography>
-                  <Typography variant="h4">
-                    {salesData.totalItems || 0}
+                    {totalOrders}
                   </Typography>
                 </Box>
               </Box>
@@ -294,24 +289,43 @@ const SalesDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* Dialoger */}
-      <SoldArticlesDialog
-        open={isSoldArticlesDialogOpen}
-        onClose={() => setIsSoldArticlesDialogOpen(false)}
-        orders={allOrders}
-      />
-      <TotalSalesDialog
-        open={isTotalSalesDialogOpen}
-        onClose={() => setIsTotalSalesDialogOpen(false)}
-        orders={allOrders}
-      />
-      {/* 
-      <OrderDetailsDialog
-        open={isOrderDialogOpen}
-        onClose={() => setIsOrderDialogOpen(false)}
-        orders={allOrders}
-      /> 
-      */}
+      {/* Tabell med orderdata som visas under korten */}
+      <Box sx={{ mt: 4 }}>
+        <Paper>
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>Ordernummer</TableCell>
+                <TableCell>Datum</TableCell>
+                <TableCell>Produkter</TableCell>
+                <TableCell align="right">Antal produkter</TableCell>
+                <TableCell align="right">Total SEK</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {groupedOrders.map((group, idx) => {
+                const productText = group.linesToDisplay
+                  .map(line => `${line.product_name} (x${line.quantity})`)
+                  .join(', ');
+                return (
+                  <TableRow key={idx}>
+                    <TableCell>{group.order_number}</TableCell>
+                    <TableCell>{group.date}</TableCell>
+                    <TableCell>{productText}</TableCell>
+                    <TableCell align="right">{group.total_quantity}</TableCell>
+                    <TableCell align="right">
+                      {group.total_sek.toLocaleString('sv-SE', {
+                        style: 'currency',
+                        currency: 'SEK'
+                      })}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </Paper>
+      </Box>
     </Box>
   );
 };

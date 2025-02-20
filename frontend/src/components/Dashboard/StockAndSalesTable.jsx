@@ -12,7 +12,6 @@ import {
   Alert,
   Stack,
   Chip,
-  TextField,
   FormControlLabel,
   Switch,
   TableSortLabel,
@@ -23,100 +22,33 @@ import {
   Button,
   TableContainer,
 } from "@mui/material";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
+import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
+import { sv } from "date-fns/locale";
 
-const OrderDetailsDialog = ({ open, onClose, orders, productName }) => {
-  const sortedOrders = useMemo(() => {
-    if (!orders || !Array.isArray(orders)) return [];
-    return [...orders].sort((a, b) => 
-      new Date(b.order_date) - new Date(a.order_date)
-    );
-  }, [orders]);
-
-  const totalQuantity = useMemo(() => {
-    return sortedOrders.reduce((sum, order) => sum + (order.quantity || 0), 0);
-  }, [sortedOrders]);
-
-  return (
-    <Dialog 
-      open={open} 
-      onClose={onClose}
-      maxWidth="md"
-      fullWidth
-    >
-      <DialogTitle>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Typography variant="h6">
-            Orderhistorik - {productName}
-          </Typography>
-          <Typography variant="subtitle1" color="text.secondary">
-            Totalt antal: {totalQuantity} st
-          </Typography>
-        </Box>
-      </DialogTitle>
-      <DialogContent>
-        <TableContainer>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Ordernummer</TableCell>
-                <TableCell>Datum</TableCell>
-                <TableCell align="right">Antal</TableCell>
-                <TableCell>Status</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {sortedOrders.map((order, index) => (
-                <TableRow key={`${order.order_number}-${index}`}>
-                  <TableCell>{order.order_number}</TableCell>
-                  <TableCell>
-                    {new Date(order.order_date).toLocaleString('sv-SE')}
-                  </TableCell>
-                  <TableCell align="right">{order.quantity}</TableCell>
-                  <TableCell>
-                    <Chip
-                      label={order.status}
-                      color={order.status.toUpperCase() === 'SHIPPED' ? 'success' : 'default'}
-                      size="small"
-                      sx={{ minWidth: 80 }}
-                    />
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Stäng</Button>
-      </DialogActions>
-    </Dialog>
-  );
+// Hjälpfunktion för att beräkna gårdagens datum (om det behövs i andra delar)
+const getYesterday = () => {
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  return yesterday;
 };
 
 const StockAndSalesTable = () => {
-  // Uppdatera datum-initialiseringen
-  const getYesterday = () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    return yesterday.toISOString().split('T')[0];
-  };
-
-  const getThirtyDaysBeforeYesterday = () => {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 31); // -31 för att få 30 dagar före igår
-    return thirtyDaysAgo.toISOString().split('T')[0];
-  };
-
-  // Uppdatera useState-initialiseringen
-  const [fromDate, setFromDate] = useState(getThirtyDaysBeforeYesterday());
-  const [toDate, setToDate] = useState(getYesterday());
+  // Sätt datum som Date-objekt
+  const [fromDate, setFromDate] = useState(
+    new Date(new Date().setDate(new Date().getDate() - 31))
+  );
+  const [toDate, setToDate] = useState(
+    new Date(new Date().setDate(new Date().getDate() - 1))
+  );
   const [onlyShipped, setOnlyShipped] = useState(false);
   const [excludeBundles, setExcludeBundles] = useState(false);
   const [onlyActive, setOnlyActive] = useState(false);
   const [salesData, setSalesData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [orderBy, setOrderBy] = useState('productName');
-  const [order, setOrder] = useState('asc');
+  const [orderBy, setOrderBy] = useState("productName");
+  const [order, setOrder] = useState("asc");
   const [selectedProduct, setSelectedProduct] = useState(null);
 
   useEffect(() => {
@@ -125,12 +57,16 @@ const StockAndSalesTable = () => {
       
       setLoading(true);
       try {
+        // Konvertera datumen till strängar i formatet YYYY-MM-DD
+        const fromDateStr = fromDate.toISOString().split("T")[0];
+        const toDateStr = toDate.toISOString().split("T")[0];
+
         const params = new URLSearchParams({
-          from_date: fromDate,
-          to_date: toDate,
-          ...(onlyShipped && { status: 'shipped' }),
-          ...(excludeBundles && { exclude_bundles: 'true' }),
-          ...(onlyActive && { only_active: 'true' })
+          from_date: fromDateStr,
+          to_date: toDateStr,
+          ...(onlyShipped && { status: "shipped" }),
+          ...(excludeBundles && { exclude_bundles: "true" }),
+          ...(onlyActive && { only_active: "true" }),
         });
         
         const response = await fetch(`/api/bq_sales?${params}`);
@@ -161,8 +97,8 @@ const StockAndSalesTable = () => {
   }, [salesData]);
 
   const handleRequestSort = (property) => {
-    const isAsc = orderBy === property && order === 'asc';
-    setOrder(isAsc ? 'desc' : 'asc');
+    const isAsc = orderBy === property && order === "asc";
+    setOrder(isAsc ? "desc" : "asc");
     setOrderBy(property);
   };
 
@@ -171,72 +107,122 @@ const StockAndSalesTable = () => {
       let valueA = a[orderBy];
       let valueB = b[orderBy];
       
-      // Hantera numeriska värden
-      if (orderBy === 'totalQuantity' || orderBy === 'totalValue') {
+      if (orderBy === "totalQuantity" || orderBy === "totalValue") {
         valueA = Number(valueA);
         valueB = Number(valueB);
       }
       
-      // Hantera null/undefined värden
-      if (valueA === null || valueA === undefined) valueA = '';
-      if (valueB === null || valueB === undefined) valueB = '';
+      if (valueA === null || valueA === undefined) valueA = "";
+      if (valueB === null || valueB === undefined) valueB = "";
       
-      // Jämför värdena
-      if (valueB < valueA) return order === 'desc' ? -1 : 1;
-      if (valueB > valueA) return order === 'desc' ? 1 : -1;
+      if (valueB < valueA) return order === "desc" ? -1 : 1;
+      if (valueB > valueA) return order === "desc" ? 1 : -1;
       return 0;
     };
     
     return [...salesList].sort(comparator);
   }, [salesList, order, orderBy]);
 
-  // Hantera klick på produkt
   const handleProductClick = (productData) => {
-    // Hämta den fullständiga produktdatan från salesData
     const fullProductData = salesData[productData.productName];
     setSelectedProduct({
       ...productData,
       orders: fullProductData.orders,
-      product_info: fullProductData.product_info
+      product_info: fullProductData.product_info,
     });
   };
 
-  return (
-    <Paper sx={{ padding: 2 }}>
-      <Stack spacing={2}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Typography variant="h6">
-            Försäljningsstatistik
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {loading ? (
-              <CircularProgress size={16} sx={{ mr: 1 }} />
-            ) : (
-              `Visar ${salesList.length} produkter`
-            )}
-          </Typography>
-        </Box>
+  // Gruppning av orderrader för tabellen
+  const groupedOrders = useMemo(() => {
+    if (!salesData) return [];
+    const map = new Map();
+    salesList.forEach((item) => {
+      item.orders.forEach((line) => {
+        const key = line.order_number;
+        if (!map.has(key)) {
+          map.set(key, {
+            order_number: key,
+            date: line.order_date,
+            lines: [],
+          });
+        }
+        const group = map.get(key);
+        group.lines.push(line);
+        if (line.order_date < group.date) {
+          group.date = line.order_date;
+        }
+      });
+    });
+    const arr = [...map.values()];
+    arr.forEach((orderGroup) => {
+      let finalLines = [...orderGroup.lines];
+      const bundleLines = finalLines.filter((l) => l.isBundle);
+      if (bundleLines.length > 0) {
+        bundleLines.forEach((bundleLine) => {
+          if (!bundleLine.childProductNumbers) return;
+          const childSkus = new Set(
+            bundleLine.childProductNumbers
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          );
+          finalLines = finalLines.filter((line) => {
+            if (line.isBundle) return true;
+            if (childSkus.has(line.productNumber)) return false;
+            return true;
+          });
+        });
+      }
+      let sumQty = 0;
+      let maxSek = 0;
+      finalLines.forEach((l) => {
+        sumQty += l.quantity || 0;
+        if ((l.total_sek || 0) > maxSek) {
+          maxSek = l.total_sek || 0;
+        }
+      });
+      orderGroup.linesToDisplay = finalLines;
+      orderGroup.total_quantity = sumQty;
+      orderGroup.total_sek = maxSek;
+    });
+    arr.sort((a, b) => new Date(b.date) - new Date(a.date));
+    return arr;
+  }, [salesData, salesList]);
 
-        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-          <TextField
+  // Uppdatera state för total ordrar
+  const totalOrders = useMemo(() => groupedOrders.length, [groupedOrders]);
+
+  if (loading) {
+    return (
+      <Box sx={{ textAlign: "center", mt: 5 }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ p: 3 }}>
+      <Typography variant="h6" sx={{ mb: 2 }}>
+        Lager & Försäljning
+      </Typography>
+      
+      {/* Använd samma snygga datumväljare med MUI DatePicker */}
+      <LocalizationProvider dateAdapter={AdapterDateFns} adapterLocale={sv}>
+        <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 3 }}>
+          <DatePicker
             label="Från datum"
-            type="date"
             value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            inputProps={{
-              max: toDate // Begränsa från-datum till att vara före eller samma som till-datum
-            }}
+            onChange={(newValue) => setFromDate(newValue)}
+            maxDate={toDate}
+            format="yyyy-MM-dd"
           />
-          <TextField
+          <DatePicker
             label="Till datum"
-            type="date"
             value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            inputProps={{
-              max: getYesterday() // Begränsa till-datum till att max vara igår
-            }}
+            onChange={(newValue) => setToDate(newValue)}
+            minDate={fromDate}
+            maxDate={new Date()}
+            format="yyyy-MM-dd"
           />
           <Stack direction="row" spacing={2}>
             <FormControlLabel
@@ -267,131 +253,103 @@ const StockAndSalesTable = () => {
               label="Endast aktiva produkter"
             />
           </Stack>
-        </Box>
+        </Stack>
+      </LocalizationProvider>
 
-        {loading && (
-          <Box sx={{ textAlign: "center", marginY: 2 }}>
-            <CircularProgress />
-          </Box>
-        )}
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="h4" gutterBottom>
+          Försäljningsstatistik
+        </Typography>
+        <Typography variant="body1">
+          Total försäljning:{" "}
+          {groupedOrders.reduce(
+            (sum, group) => sum + group.total_sek,
+            0
+          ).toLocaleString("sv-SE", {
+            style: "currency",
+            currency: "SEK",
+          })}
+        </Typography>
+        <Typography variant="body1">
+          Antal ordrar: {totalOrders}
+        </Typography>
+      </Box>
 
-        {salesList.length > 0 && (
-          <Table>
-            <TableHead>
-              <TableRow>
-                <TableCell>
-                  <TableSortLabel
-                    active={orderBy === 'productName'}
-                    direction={orderBy === 'productName' ? order : 'asc'}
-                    onClick={() => handleRequestSort('productName')}
-                  >
-                    Produkt
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel
-                    active={orderBy === 'productNumber'}
-                    direction={orderBy === 'productNumber' ? order : 'asc'}
-                    onClick={() => handleRequestSort('productNumber')}
-                  >
-                    Artikelnummer
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel
-                    active={orderBy === 'collection'}
-                    direction={orderBy === 'collection' ? order : 'asc'}
-                    onClick={() => handleRequestSort('collection')}
-                  >
-                    Kollektion
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel
-                    active={orderBy === 'productType'}
-                    direction={orderBy === 'productType' ? order : 'asc'}
-                    onClick={() => handleRequestSort('productType')}
-                  >
-                    Typ
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel
-                    active={orderBy === 'totalQuantity'}
-                    direction={orderBy === 'totalQuantity' ? order : 'asc'}
-                    onClick={() => handleRequestSort('totalQuantity')}
-                  >
-                    Antal sålda
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel
-                    active={orderBy === 'totalValue'}
-                    direction={orderBy === 'totalValue' ? order : 'asc'}
-                    onClick={() => handleRequestSort('totalValue')}
-                  >
-                    Totalt värde
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel
-                    active={orderBy === 'status'}
-                    direction={orderBy === 'status' ? order : 'asc'}
-                    onClick={() => handleRequestSort('status')}
-                  >
-                    Status
-                  </TableSortLabel>
-                </TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {sortedSalesList.map((item) => (
-                <TableRow 
-                  key={item.productNumber}
-                  onClick={() => handleProductClick(item)}
-                  sx={{ 
-                    cursor: 'pointer',
-                    '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' }
-                  }}
-                >
-                  <TableCell>{item.productName}</TableCell>
-                  <TableCell>{item.productNumber}</TableCell>
-                  <TableCell>{item.collection || "-"}</TableCell>
-                  <TableCell>{item.productType || "-"}</TableCell>
-                  <TableCell>{item.totalQuantity}</TableCell>
-                  <TableCell>
-                    {item.totalValue.toFixed(2)} SEK
-                  </TableCell>
-                  <TableCell>
-                    <Chip 
-                      label={item.isBundle ? "Bundle" : "Single"} 
-                      color={item.status === "ACTIVE" ? "success" : "default"}
-                      size="small"
-                    />
+      <TableContainer component={Paper}>
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableCell>Ordernummer</TableCell>
+              <TableCell>Datum</TableCell>
+              <TableCell>Produkter</TableCell>
+              <TableCell align="right">Antal produkter</TableCell>
+              <TableCell align="right">Total SEK</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {groupedOrders.map((group, idx) => {
+              const productText = group.linesToDisplay
+                .map((line) => `${line.product_name} (x${line.quantity})`)
+                .join(", ");
+              return (
+                <TableRow key={idx} onClick={() => handleProductClick(group)}>
+                  <TableCell>{group.order_number}</TableCell>
+                  <TableCell>{group.date}</TableCell>
+                  <TableCell>{productText}</TableCell>
+                  <TableCell align="right">{group.total_quantity}</TableCell>
+                  <TableCell align="right">
+                    {group.total_sek.toLocaleString("sv-SE", {
+                      style: "currency",
+                      currency: "SEK",
+                    })}
                   </TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
-        {!loading && salesList.length === 0 && (
-          <Alert severity="info">
-            Ingen försäljningsdata hittad för den valda perioden.
-          </Alert>
-        )}
-
-        {/* Lägg till OrderDetailsDialog */}
-        {selectedProduct && (
-          <OrderDetailsDialog
-            open={Boolean(selectedProduct)}
-            onClose={() => setSelectedProduct(null)}
-            orders={selectedProduct.orders || []}
-            productName={selectedProduct.product_info.product_name}
-          />
-        )}
-      </Stack>
-    </Paper>
+      {selectedProduct && (
+        <Dialog
+          open={Boolean(selectedProduct)}
+          onClose={() => setSelectedProduct(null)}
+          maxWidth="md"
+          fullWidth
+        >
+          <DialogTitle>
+            Orderhistorik - {selectedProduct.product_info.product_name}
+          </DialogTitle>
+          <DialogContent>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Ordernummer</TableCell>
+                  <TableCell>Datum</TableCell>
+                  <TableCell align="right">Antal</TableCell>
+                  <TableCell>Status</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {selectedProduct.orders.map((order, index) => (
+                  <TableRow key={`${order.order_number}-${index}`}>
+                    <TableCell>{order.order_number}</TableCell>
+                    <TableCell>
+                      {new Date(order.order_date).toLocaleString("sv-SE")}
+                    </TableCell>
+                    <TableCell align="right">{order.quantity}</TableCell>
+                    <TableCell>{order.status}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setSelectedProduct(null)}>Stäng</Button>
+          </DialogActions>
+        </Dialog>
+      )}
+    </Box>
   );
 };
 
