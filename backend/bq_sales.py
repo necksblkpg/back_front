@@ -4,77 +4,24 @@ from dotenv import load_dotenv
 load_dotenv()  # Ladda miljövariabler från .env
 from google.cloud import bigquery
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime
 import threading
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Skapa en blueprint för BigQuery-försäljningsdata
 bq_sales = Blueprint('bq_sales', __name__)
 
-# Global cache för försäljningsdata från BigQuery
+# Global cache
 cached_sales_data = []
 cache_last_updated = None
 cache_lock = threading.Lock()
 
-# Konfiguration för BigQuery
+# Ändra till ditt BigQuery-projekt och tabell om nödvändigt
 BQ_TABLE = "my-project-db-433615.Info.SKU_sb"
 
 def fetch_sales_data_from_bq():
-    """
-    Hämtar försäljningsdata från BigQuery och cachar den
-    """
     global cached_sales_data, cache_last_updated
     client = bigquery.Client()
     
-    # Kolla SKU_sb tabellen (debug)
-    print("\nDEBUG - SKU_sb data:")
-    query1 = """
-    SELECT DISTINCT
-        product_name,
-        productNumber
-    FROM `my-project-db-433615.Info.SKU_sb`
-    LIMIT 5
-    """
-    results1 = client.query(query1).result()
-    for row in results1:
-        print(f"SKU_sb - Product: {row.product_name}, Number: {row.productNumber}")
-
-    # Kolla sku_info tabellen (debug)
-    print("\nDEBUG - sku_info data:")
-    query2 = """
-    SELECT 
-        productNumber,
-        productType,
-        collection
-    FROM `my-project-db-433615.Info.sku_info`
-    LIMIT 5
-    """
-    results2 = client.query(query2).result()
-    for row in results2:
-        print(f"sku_info - Number: {row.productNumber}, Type: {row.productType}, Collection: {row.collection}")
-
-    # Debug-fråga för att hitta matchningar
-    print("\nDEBUG - Söker matchningar:")
-    debug_query = """
-    SELECT DISTINCT
-        s.productNumber as sb_number,
-        i.productNumber as info_number,
-        s.product_name,
-        i.productType,
-        i.collection
-    FROM `my-project-db-433615.Info.SKU_sb` s
-    INNER JOIN `my-project-db-433615.Info.sku_info` i
-    ON s.productNumber = i.productNumber
-    LIMIT 10
-    """
-    debug_results = client.query(debug_query).result()
-    for row in debug_results:
-        print(f"MATCH - Product: {row.product_name}")
-        print(f"Numbers: {row.sb_number} = {row.info_number}")
-        print(f"Type: {row.productType}, Collection: {row.collection}")
-        print("---")
-
-    # Huvudfrågan - uppdatera för att hantera tid korrekt
     query = """
     SELECT 
         s.order_uuid,
@@ -96,10 +43,11 @@ def fetch_sales_data_from_bq():
         i.isBundle,
         i.productType,
         i.collection,
-        i.supplier
+        i.supplier,
+        i.childProductNumbers
     FROM `my-project-db-433615.Info.SKU_sb` s
     INNER JOIN `my-project-db-433615.Info.sku_info` i
-    ON TRIM(s.productNumber) = TRIM(i.productNumber)
+      ON TRIM(s.productNumber) = TRIM(i.productNumber)
     """
     query_job = client.query(query)
     results = query_job.result()
@@ -108,7 +56,6 @@ def fetch_sales_data_from_bq():
     stockholm = pytz.timezone("Europe/Stockholm")
     for row in results:
         if row.order_date:
-            # Hantera tiden som den kommer från databasen
             order_date_str = row.order_date.strftime("%Y-%m-%d %H:%M:%S")
         else:
             order_date_str = None
@@ -133,7 +80,8 @@ def fetch_sales_data_from_bq():
             "isBundle": row.isBundle,
             "productType": row.productType,
             "collection": row.collection,
-            "supplier": row.supplier
+            "supplier": row.supplier,
+            "childProductNumbers": row.childProductNumbers
         })
     
     with cache_lock:
@@ -141,20 +89,13 @@ def fetch_sales_data_from_bq():
         cache_last_updated = datetime.now(stockholm).strftime("%Y-%m-%d %H:%M:%S")
 
 def schedule_bq_sales_update():
-    """
-    Schemalägger en daglig uppdatering av BigQuery-försäljningsdata
-    """
     scheduler = BackgroundScheduler(timezone="Europe/Stockholm")
     scheduler.add_job(fetch_sales_data_from_bq, "cron", hour=6, minute=0)
     scheduler.start()
-    fetch_sales_data_from_bq()  # Initial fetch
+    fetch_sales_data_from_bq()  # initial fetch
 
-# Ändra routen så den blir relativt blueprintens url_prefix
 @bq_sales.route("/bq_sales", methods=["GET"])
 def get_bq_sales():
-    """
-    Endpoint för att hämta aggregerad försäljningsdata
-    """
     from_date = request.args.get("from_date")
     to_date = request.args.get("to_date")
     only_shipped = request.args.get("status") == "shipped"
@@ -163,74 +104,87 @@ def get_bq_sales():
     
     if not from_date or not to_date:
         return jsonify({"error": "Både from_date och to_date måste anges"}), 400
-        
+
     try:
         datetime.strptime(from_date, "%Y-%m-%d")
         datetime.strptime(to_date, "%Y-%m-%d")
     except ValueError:
         return jsonify({"error": "Ogiltigt datumformat. Använd YYYY-MM-DD"}), 400
 
-    data = aggregate_sales_data_by_date(from_date, to_date, only_shipped, exclude_bundles, only_active)
+    aggregated_data = aggregate_sales_data_by_date(from_date, to_date, only_shipped, exclude_bundles, only_active)
+
+    # Beräkna toppnivå-totals
+    total_sales = 0.0
+    total_items = 0
+    unique_order_numbers = set()
+
+    for product_num, product_info in aggregated_data.items():
+        total_sales += product_info["total_value"]
+        for order in product_info["orders"]:
+            total_items += order["quantity"] or 0
+            unique_order_numbers.add(order["order_number"])
+
+    total_orders = len(unique_order_numbers)
+
     return jsonify({
         "from_date": from_date,
         "to_date": to_date,
         "only_shipped": only_shipped,
         "exclude_bundles": exclude_bundles,
         "only_active": only_active,
-        "aggregated_sales": data,
+        "aggregated_sales": aggregated_data,
+        "totalSales": total_sales,
+        "totalOrders": total_orders,
+        "totalItems": total_items,
         "last_updated": cache_last_updated
     })
 
 def aggregate_sales_data_by_date(from_date, to_date, only_shipped=False, exclude_bundles=False, only_active=False):
     """
-    Filtrerar och aggregerar försäljningsdatan baserat på datum, status och productNumber.
+    Filtrerar och aggregerar försäljningsdata baserat på datum, status och productNumber.
     """
     if not cached_sales_data:
         return {}
     
     stockholm = pytz.timezone("Europe/Stockholm")
-    
-    # Konvertera input-datum till svenska tidszonen och justera from_date till 00:00:00
+    from datetime import datetime
     from_date_dt = stockholm.localize(datetime.strptime(from_date, "%Y-%m-%d").replace(hour=0, minute=0, second=0))
-    # Sätt till-datumet till 23:59:59 samma dag
     to_date_dt = stockholm.localize(datetime.strptime(to_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59))
     
-    # Konvertera till UTC för jämförelse
+    # Filtrera i UTC för exakta tidsjämförelser
     from_date_utc = from_date_dt.astimezone(pytz.UTC)
     to_date_utc = to_date_dt.astimezone(pytz.UTC)
     
-    # Skapa en dictionary för alla unika produkter baserat på productNumber
     all_products = {}
     
-    # Uppdatera försäljningssiffror och lägg till orderinformation
     for row in cached_sales_data:
         if not row["order_date"]:
             continue
         
         try:
-            # Konvertera order_date till UTC för jämförelse
-            order_date = datetime.strptime(row["order_date"], "%Y-%m-%d %H:%M:%S")
-            order_date_utc = pytz.UTC.localize(order_date)
-            
-            # Strikt datumfiltrering i UTC
+            # order_date_str -> UTC
+            naive_date = datetime.strptime(row["order_date"], "%Y-%m-%d %H:%M:%S")
+            order_date_utc = pytz.UTC.localize(naive_date)
+
+            # Filtrera i UTC
             if not (from_date_utc <= order_date_utc <= to_date_utc):
                 continue
-            
             if only_shipped and row["order_status"].upper() != "SHIPPED":
                 continue
-            
             if exclude_bundles and row["isBundle"]:
                 continue
-            
             if only_active and row["product_status"].upper() != "ACTIVE":
                 continue
+
+            # Konvertera till svensk tid innan vi sparar
+            order_date_swe = order_date_utc.astimezone(stockholm)
             
             key = row["productNumber"]
             if key not in all_products:
                 all_products[key] = {
                     "total_quantity": 0,
                     "total_value": 0.0,
-                    "orders": [],  # Lägg till en lista för orders
+                    "orders": [],
                     "product_info": {
                         "product_id": row["product_id"],
                         "status": row["product_status"],
@@ -239,27 +193,42 @@ def aggregate_sales_data_by_date(from_date, to_date, only_shipped=False, exclude
                         "productType": row["productType"],
                         "collection": row["collection"],
                         "supplier": row["supplier"],
-                        "product_name": row["product_name"]
+                        "product_name": row["product_name"],
+                        "childProductNumbers": row["childProductNumbers"]
                     }
                 }
             
-            all_products[key]["total_quantity"] += row["quantity"] if row["quantity"] else 0
-            all_products[key]["total_value"] += row["total_sek"] if row["total_sek"] else 0
+            quantity = row["quantity"] or 0
+            total_sek = row["total_sek"] or 0.0
+
+            all_products[key]["total_quantity"] += quantity
+            all_products[key]["total_value"] += total_sek
             
-            # Lägg till orderinformation
             all_products[key]["orders"].append({
                 "order_number": row["order_number"],
-                "order_date": order_date.strftime("%Y-%m-%d %H:%M:%S"),  # Formatera i svensk tid
-                "quantity": row["quantity"],
+                # Visar datum i svensk tid
+                "order_date": order_date_swe.strftime("%Y-%m-%d %H:%M:%S"),
+                "quantity": quantity,
                 "status": row["order_status"],
-                "total_sek": row["total_sek"]
+                "total_sek": total_sek,
+                "isBundle": row["isBundle"],
+                "product_name": row["product_name"],
+                "productNumber": row["productNumber"]
             })
-        
-        except (ValueError, TypeError) as e:
+        except Exception as e:
             print(f"Fel vid hantering av datum för order {row.get('order_number')}: {e}")
             continue
     
     return all_products
 
-# Starta schemaläggaren när modulen laddas
+# I din bq_sales.py
+@bq_sales.route("/bq_sales/refresh", methods=["POST"])
+def refresh_bq_sales():
+    """
+    Manuell endpoint för att uppdatera cachen direkt från BigQuery.
+    """
+    fetch_sales_data_from_bq()
+    return jsonify({"message": "Cache uppdaterad"})
+
+
 schedule_bq_sales_update()
