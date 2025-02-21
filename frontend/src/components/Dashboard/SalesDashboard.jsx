@@ -13,7 +13,8 @@ import {
   TableBody,
   TableRow,
   TableCell,
-  Paper
+  Paper,
+  Button
 } from '@mui/material';
 import AttachMoneyIcon from '@mui/icons-material/AttachMoney';
 import ShoppingBasketIcon from '@mui/icons-material/ShoppingBasket';
@@ -21,21 +22,72 @@ import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { sv } from 'date-fns/locale';
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  Legend,
+  ResponsiveContainer
+} from 'recharts';
+
+// Färgpalett för diagrammet
+const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#8dd1e1'];
 
 /**
- * Beräknar total försäljning utan dubbelsummering.
- * Om showBundles är true, används nuvarande logik (behåll bundlar och filtrera ut barnrader)
- * Om showBundles är false, tas bundlar bort och endast barnrader räknas.
+ * Donut-diagram med onClick-funktionalitet. När en kategori klickas anropas onCategorySelect.
+ */
+function CategoryDonutChart({ data, onCategorySelect }) {
+  return (
+    <Paper sx={{ p: 2, boxShadow: 3 }}>
+      <Typography variant="h6" align="center" sx={{ mb: 2 }}>
+        Fördelning av försäljning per produktkategori (inkl. frakt)
+      </Typography>
+      <ResponsiveContainer width="100%" height={500}>
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey="value"
+            nameKey="type"
+            innerRadius="60%"
+            outerRadius="80%"
+            label={({ type, percent }) =>
+              `${type} (${(percent * 100).toFixed(0)}%)`
+            }
+          >
+            {data.map((entry, index) => (
+              <Cell
+                key={`cell-${index}`}
+                fill={COLORS[index % COLORS.length]}
+                onClick={() => onCategorySelect(entry.type)}
+                style={{ cursor: 'pointer' }}
+              />
+            ))}
+          </Pie>
+          <Tooltip
+            formatter={(value) =>
+              value.toLocaleString('sv-SE', {
+                style: 'currency',
+                currency: 'SEK'
+              })
+            }
+          />
+          <Legend verticalAlign="bottom" height={36} />
+        </PieChart>
+      </ResponsiveContainer>
+    </Paper>
+  );
+}
+
+/**
+ * Funktion för att beräkna total försäljning (unbundled).
  */
 function calculateUnbundledTotal(orders, showBundles = true) {
   const map = new Map();
   orders.forEach(line => {
     const key = line.order_number;
     if (!map.has(key)) {
-      map.set(key, {
-        lines: [],
-        date: line.order_date
-      });
+      map.set(key, { lines: [], date: line.order_date });
     }
     const group = map.get(key);
     group.lines.push(line);
@@ -43,7 +95,7 @@ function calculateUnbundledTotal(orders, showBundles = true) {
       group.date = line.order_date;
     }
   });
-
+  
   let total = 0;
   const arr = [...map.values()];
   arr.forEach(orderGroup => {
@@ -67,7 +119,6 @@ function calculateUnbundledTotal(orders, showBundles = true) {
         });
       }
     } else {
-      // Bundlar stängda: ta bort bundlar, använd endast barnrader
       finalLines = finalLines.filter(line => !line.isBundle);
     }
     let maxSek = 0;
@@ -85,29 +136,21 @@ const SalesDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [salesData, setSalesData] = useState({});
   const [allOrders, setAllOrders] = useState([]);
-  // Datum
-  const [fromDate, setFromDate] = useState(
-    new Date(new Date().setDate(new Date().getDate() - 30))
-  );
-  const [toDate, setToDate] = useState(
-    new Date(new Date().setDate(new Date().getDate() - 1))
-  );
-  // Switch: Visa endast SHIPPED ordrar
+  const [fromDate, setFromDate] = useState(new Date(new Date().setDate(new Date().getDate() - 30)));
+  const [toDate, setToDate] = useState(new Date(new Date().setDate(new Date().getDate() - 1)));
   const [onlyShipped, setOnlyShipped] = useState(false);
-  // Ny switch: Visa bundlar eller inte
   const [showBundles, setShowBundles] = useState(true);
+  // Ny state för vald kategori (om användaren klickar på ett diagramsegment)
+  const [selectedCategory, setSelectedCategory] = useState(null);
 
-  // Hämta försäljningsdata
+  // Hämta försäljningsdata från backend
   useEffect(() => {
     const fetchSalesData = async () => {
       try {
         setLoading(true);
         const fromDateStr = fromDate.toISOString().split('T')[0];
         const toDateStr = toDate.toISOString().split('T')[0];
-        const params = new URLSearchParams({
-          from_date: fromDateStr,
-          to_date: toDateStr
-        });
+        const params = new URLSearchParams({ from_date: fromDateStr, to_date: toDateStr });
         if (onlyShipped) {
           params.set('status', 'shipped');
         }
@@ -122,7 +165,7 @@ const SalesDashboard = () => {
           productOrders.forEach(order => {
             flattenedOrders.push({
               ...order,
-              childProductNumbers: productInfo.childProductNumbers
+              productType: productInfo.productType || 'Okänt'
             });
           });
         }
@@ -136,23 +179,18 @@ const SalesDashboard = () => {
     fetchSalesData();
   }, [fromDate, toDate, onlyShipped]);
 
-  // Beräkna total försäljning baserat på om bundlar ska visas
   const unbundledTotalSales = useMemo(() => {
     return calculateUnbundledTotal(allOrders, showBundles);
   }, [allOrders, showBundles]);
 
-  // Gruppning av orderrader för att skapa tabellrader samt räkna antal unika ordrar
+  // Gruppning av orderrader baserat på ordernummer
   const groupedOrders = useMemo(() => {
     if (!allOrders) return [];
     const map = new Map();
     allOrders.forEach(line => {
       const key = line.order_number;
       if (!map.has(key)) {
-        map.set(key, {
-          order_number: key,
-          date: line.order_date,
-          lines: []
-        });
+        map.set(key, { order_number: key, date: line.order_date, lines: [] });
       }
       const group = map.get(key);
       group.lines.push(line);
@@ -169,10 +207,7 @@ const SalesDashboard = () => {
           bundleLines.forEach(bundleLine => {
             if (!bundleLine.childProductNumbers) return;
             const childSkus = new Set(
-              bundleLine.childProductNumbers
-                .split(',')
-                .map(sku => sku.trim())
-                .filter(Boolean)
+              bundleLine.childProductNumbers.split(',').map(sku => sku.trim()).filter(Boolean)
             );
             finalLines = finalLines.filter(line => {
               if (line.isBundle) return true;
@@ -182,10 +217,8 @@ const SalesDashboard = () => {
           });
         }
       } else {
-        // När bundlar är avstängda: filtrera bort bundle-rader
         finalLines = finalLines.filter(line => !line.isBundle);
       }
-      orderGroup.linesToDisplay = finalLines;
       let sumQty = 0;
       let maxSek = 0;
       finalLines.forEach(l => {
@@ -194,6 +227,7 @@ const SalesDashboard = () => {
           maxSek = l.total_sek || 0;
         }
       });
+      orderGroup.linesToDisplay = finalLines;
       orderGroup.total_quantity = sumQty;
       orderGroup.total_sek = maxSek;
     });
@@ -201,8 +235,69 @@ const SalesDashboard = () => {
     return arr;
   }, [allOrders, showBundles]);
 
-  // Räkna antalet unika ordrar
   const totalOrders = useMemo(() => groupedOrders.length, [groupedOrders]);
+
+  /**
+   * Beräknar försäljning per produktkategori (productType) inklusive frakt.
+   * Varje orderrad får sin andel av orderns frakt baserat på sin andel av den totala orderns värde.
+   */
+  const productTypeDistribution = useMemo(() => {
+    const distribution = {};
+    groupedOrders.forEach(orderGroup => {
+      const lines = orderGroup.linesToDisplay;
+      if (lines.length === 0) return;
+      // Fraktkostnaden antas vara densamma för hela ordern – ta värdet från första raden
+      const shipping = lines[0].shipping_value_sek || 0;
+      // Summera orderradernas värde (använd line_total_sek om tillgängligt, annars total_sek)
+      const totalLineValue = lines.reduce((sum, line) => {
+        const lineValue = (line.line_total_sek != null) ? line.line_total_sek : (line.total_sek || 0);
+        return sum + lineValue;
+      }, 0);
+      
+      lines.forEach(line => {
+        const type = line.productType || 'Okänt';
+        const baseValue = (line.line_total_sek != null) ? line.line_total_sek : (line.total_sek || 0);
+        // Fördela frakten proportionellt, om totalLineValue > 0
+        const shippingShare = totalLineValue > 0 ? (baseValue / totalLineValue) * shipping : 0;
+        const lineValueWithShipping = baseValue + shippingShare;
+        
+        // Om en rad innehåller flera productNumbers delas värdet lika
+        const productNumbers = line.productNumber.split(',').map(s => s.trim());
+        if (productNumbers.length > 1) {
+          const share = lineValueWithShipping / productNumbers.length;
+          productNumbers.forEach(() => {
+            if (!distribution[type]) distribution[type] = 0;
+            distribution[type] += share;
+          });
+        } else {
+          if (!distribution[type]) distribution[type] = 0;
+          distribution[type] += lineValueWithShipping;
+        }
+      });
+    });
+    
+    return Object.entries(distribution)
+      .map(([type, value]) => ({ type, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [groupedOrders]);
+
+  // Filtrera grupperade ordrar baserat på vald kategori (om någon har klickats)
+  const filteredOrders = useMemo(() => {
+    if (!selectedCategory) return groupedOrders;
+    return groupedOrders.filter(orderGroup =>
+      orderGroup.linesToDisplay.some(line => line.productType === selectedCategory)
+    );
+  }, [groupedOrders, selectedCategory]);
+
+  // Callback för när en kategori klickas i diagrammet
+  const handleCategorySelect = (type) => {
+    // Om samma kategori klickas igen, rensa filtret
+    if (selectedCategory === type) {
+      setSelectedCategory(null);
+    } else {
+      setSelectedCategory(type);
+    }
+  };
 
   if (loading) {
     return (
@@ -218,7 +313,7 @@ const SalesDashboard = () => {
         Försäljningsöversikt
       </Typography>
 
-      {/* Datumväljare, switch för SHIPPED samt toggle för bundlar */}
+      {/* Datumväljare och switchar */}
       <LocalizationProvider dateAdapter={AdapterDateFns} adapterLocale={sv}>
         <Box sx={{ display: 'flex', gap: 2, mb: 3, alignItems: 'center' }}>
           <DatePicker
@@ -243,7 +338,7 @@ const SalesDashboard = () => {
                 onChange={(e) => setOnlyShipped(e.target.checked)}
               />
             }
-            label="Visa endast SHIPPED ordrar"
+            label="Visa endast levererade ordrar"
           />
           <FormControlLabel
             control={
@@ -257,8 +352,17 @@ const SalesDashboard = () => {
         </Box>
       </LocalizationProvider>
 
+      {/* Om en kategori är vald, visa en knapp för att rensa filtret */}
+      {selectedCategory && (
+        <Box sx={{ mb: 2 }}>
+          <Button variant="outlined" onClick={() => setSelectedCategory(null)}>
+            Visa alla ordrar (filtrerat på: {selectedCategory})
+          </Button>
+        </Box>
+      )}
+
+      {/* Kort för total försäljning & antal ordrar */}
       <Grid container spacing={3}>
-        {/* Kort för Total försäljning */}
         <Grid item xs={12} md={6}>
           <Card
             sx={{
@@ -283,7 +387,6 @@ const SalesDashboard = () => {
             </CardContent>
           </Card>
         </Grid>
-        {/* Kort för Antal ordrar */}
         <Grid item xs={12} md={6}>
           <Card
             sx={{
@@ -297,9 +400,7 @@ const SalesDashboard = () => {
                 <ShoppingBasketIcon sx={{ fontSize: 40 }} />
                 <Box>
                   <Typography variant="h6">Antal ordrar</Typography>
-                  <Typography variant="h4">
-                    {totalOrders}
-                  </Typography>
+                  <Typography variant="h4">{filteredOrders.length}</Typography>
                 </Box>
               </Box>
             </CardContent>
@@ -307,7 +408,12 @@ const SalesDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* Tabell med orderdata */}
+      {/* Full-width donut-diagram – använder en Box med utsträckning över hela viewport-bredden */}
+      <Box sx={{ width: '100vw', ml: '-24px', mr: '-24px', mb: 4 }}>
+        <CategoryDonutChart data={productTypeDistribution} onCategorySelect={handleCategorySelect} />
+      </Box>
+
+      {/* Tabell med orderdata – visar filtrerade ordrar baserat på vald kategori */}
       <Box sx={{ mt: 4 }}>
         <Paper>
           <Table>
@@ -315,15 +421,15 @@ const SalesDashboard = () => {
               <TableRow>
                 <TableCell>Ordernummer</TableCell>
                 <TableCell>Datum</TableCell>
-                <TableCell>Produkter</TableCell>
+                <TableCell>Produktnummer</TableCell>
                 <TableCell align="right">Antal produkter</TableCell>
                 <TableCell align="right">Total SEK</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {groupedOrders.map((group, idx) => {
+              {filteredOrders.map((group, idx) => {
                 const productText = group.linesToDisplay
-                  .map(line => `${line.product_name} (x${line.quantity})`)
+                  .map(line => line.productNumber)
                   .join(', ');
                 return (
                   <TableRow key={idx}>

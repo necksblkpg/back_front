@@ -22,6 +22,7 @@ def fetch_sales_data_from_bq():
     global cached_sales_data, cache_last_updated
     client = bigquery.Client()
     
+    # Uppdaterad SELECT-fråga med de nya kolumnerna: line_total_sek och shipping_value_sek
     query = """
     SELECT 
         s.order_uuid,
@@ -38,6 +39,8 @@ def fetch_sales_data_from_bq():
         s.unit_cost_value,
         s.unit_cost_currency,
         s.total_sek,
+        s.line_total_sek,
+        s.shipping_value_sek,
         i.id as product_id,
         i.status as product_status,
         i.isBundle,
@@ -75,6 +78,8 @@ def fetch_sales_data_from_bq():
             "unit_cost_value": row.unit_cost_value,
             "unit_cost_currency": row.unit_cost_currency,
             "total_sek": row.total_sek,
+            "line_total_sek": row.line_total_sek,         # Ny kolumn
+            "shipping_value_sek": row.shipping_value_sek,     # Ny kolumn
             "product_id": row.product_id,
             "product_status": row.product_status,
             "isBundle": row.isBundle,
@@ -142,6 +147,7 @@ def get_bq_sales():
 def aggregate_sales_data_by_date(from_date, to_date, only_shipped=False, exclude_bundles=False, only_active=False):
     """
     Filtrerar och aggregerar försäljningsdata baserat på datum, status och productNumber.
+    Nu ingår även de nya fälten line_total_sek och shipping_value_sek.
     """
     if not cached_sales_data:
         return {}
@@ -162,11 +168,10 @@ def aggregate_sales_data_by_date(from_date, to_date, only_shipped=False, exclude
             continue
         
         try:
-            # order_date_str -> UTC
+            # Konvertera order_date från sträng till UTC
             naive_date = datetime.strptime(row["order_date"], "%Y-%m-%d %H:%M:%S")
             order_date_utc = pytz.UTC.localize(naive_date)
 
-            # Filtrera i UTC
             if not (from_date_utc <= order_date_utc <= to_date_utc):
                 continue
             if only_shipped and row["order_status"].upper() != "SHIPPED":
@@ -176,7 +181,6 @@ def aggregate_sales_data_by_date(from_date, to_date, only_shipped=False, exclude
             if only_active and row["product_status"].upper() != "ACTIVE":
                 continue
 
-            # Konvertera till svensk tid innan vi sparar
             order_date_swe = order_date_utc.astimezone(stockholm)
             
             key = row["productNumber"]
@@ -184,6 +188,8 @@ def aggregate_sales_data_by_date(from_date, to_date, only_shipped=False, exclude
                 all_products[key] = {
                     "total_quantity": 0,
                     "total_value": 0.0,
+                    "total_line_sek": 0.0,  # Summa av line_total_sek för detta produktnummer
+                    "shipping_value_sek": row.get("shipping_value_sek"),  # Behåll det första värdet
                     "orders": [],
                     "product_info": {
                         "product_id": row["product_id"],
@@ -200,17 +206,20 @@ def aggregate_sales_data_by_date(from_date, to_date, only_shipped=False, exclude
             
             quantity = row["quantity"] or 0
             total_sek = row["total_sek"] or 0.0
+            line_total_sek = row.get("line_total_sek") or 0.0
 
             all_products[key]["total_quantity"] += quantity
             all_products[key]["total_value"] += total_sek
-            
+            all_products[key]["total_line_sek"] += line_total_sek
+
             all_products[key]["orders"].append({
                 "order_number": row["order_number"],
-                # Visar datum i svensk tid
                 "order_date": order_date_swe.strftime("%Y-%m-%d %H:%M:%S"),
                 "quantity": quantity,
                 "status": row["order_status"],
                 "total_sek": total_sek,
+                "line_total_sek": line_total_sek,
+                "shipping_value_sek": row.get("shipping_value_sek"),
                 "isBundle": row["isBundle"],
                 "product_name": row["product_name"],
                 "productNumber": row["productNumber"]
@@ -221,7 +230,6 @@ def aggregate_sales_data_by_date(from_date, to_date, only_shipped=False, exclude
     
     return all_products
 
-# I din bq_sales.py
 @bq_sales.route("/bq_sales/refresh", methods=["POST"])
 def refresh_bq_sales():
     """
@@ -229,6 +237,5 @@ def refresh_bq_sales():
     """
     fetch_sales_data_from_bq()
     return jsonify({"message": "Cache uppdaterad"})
-
 
 schedule_bq_sales_update()

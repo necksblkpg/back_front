@@ -83,8 +83,8 @@ function App() {
                     textColor="primary"
                     centered
                   >
-                    <Tab label="Försäljningsöversikt" />
-                    <Tab label="Lager och försäljning" />
+                    <Tab label="Dashboard" />
+                    <Tab label="Statistik och lager" />
                   </Tabs>
                 </Paper>
               </Grid>
